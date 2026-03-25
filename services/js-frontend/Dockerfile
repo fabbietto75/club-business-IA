@@ -9,4 +9,4 @@ COPY server.js .
 
 EXPOSE 3000
 
-CMD ["npm", "start"]
+CMD ["sh", "-c", "export PORT=${PORT:-3000} && exec npm start"]

@@ -38,11 +38,22 @@ Il blueprint crea un **PostgreSQL gestito** (`club-business-ia-db`): i dati rest
 - Render collega l’API con `DATABASE_URL` (formato `postgres://...` o `postgresql://...`).
 - L’API converte in `postgresql+psycopg2://` per SQLAlchemy e, se manca nella URL, aggiunge **`sslmode=require`** (compatibile con le connessioni SSL di Render). Per Postgres locale senza SSL puoi impostare `DATABASE_SSLMODE=disable`.
 - All’avvio: `create_all` + aggiornamenti schema leggeri + seed (admin, prodotti demo, ecc.).
-- **`GET /health`**: risponde `200` solo se l’app **e** il database rispondono (`SELECT 1`), così il health check di Render segnala problemi di connessione al DB.
+- **`GET /`**: risposta breve (utile se apri l’URL base nel browser; non è una pagina HTML).
+- **`GET /health`**: solo **liveness** (processo vivo), senza query al DB — consigliato come **Health Check Path** su Render.
+- **`GET /health/ready`**: **readiness** con `SELECT 1` sul DB (per controlli manuali o monitoraggio).
 
 ### Piano free
 
 - I servizi free possono andare in sleep dopo inattivita: il primo accesso puo richiedere ~1 minuto.
+
+### Il servizio non risulta Live o il sito “non va”
+
+1. **Web Service → Settings**: **Health Check Path** = `/health` (non lasciare vuoto se prima puntava a `/`, che senza route dedicata poteva dare 404).
+2. **Deploy**: ultimo commit da GitHub (Dockerfile API con `${PORT:-8000}`).
+3. **Environment** del Web Service: `DATABASE_URL` valorizzata (Internal URL del Postgres).
+4. **Logs** del **Web Service** (non solo del database): cerca `Application startup complete` e assenza di traceback.
+5. Apri nel browser: `https://<nome-servizio>.onrender.com/` e `.../docs` — se vedi JSON o Swagger, l’API è online.
+6. Piano free: dopo lo sleep la prima richiesta può impiegare **fino a ~1 minuto** (schermata “Application loading” / spinner).
 
 ## Opzione B: Creazione manuale dei servizi
 

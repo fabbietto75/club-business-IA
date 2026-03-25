@@ -659,6 +659,16 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+def root():
+    return {
+        "service": "club-business-ia-api",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
 def _notify_users_except(
     db: Session,
     exclude_user_id: int,
@@ -1007,6 +1017,13 @@ def get_capacity_stats(db: Session) -> dict:
 
 @app.get("/health")
 def health():
+    """Liveness per Render: nessuna query DB (evita fallimenti sporadici del probe)."""
+    return {"status": "ok", "service": "python-api"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness: verifica connessione al database."""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
