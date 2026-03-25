@@ -70,3 +70,16 @@ L’API usa `ALLOWED_ORIGINS` (lista separata da virgole). Deve includere esatta
 ## PHP e Docker locale
 
 Il servizio `php-api` del `docker-compose` locale non e incluso nel blueprint Render; puoi aggiungere un terzo Web Service in seguito se serve.
+
+## Render fa ancora checkout di un commit vecchio (es. `99ba393`)
+
+Nei log di build la riga `Checking out commit ...` deve coincidere con l’ultimo commit su GitHub (`main`). Se vedi sempre lo stesso hash vecchio:
+
+1. **Settings** del Web Service → **Build & Deploy** → verifica **Repository** (`fabbietto75/club-business-IA`) e **Branch** (`main`).
+2. **Manual Deploy** → scegli esplicitamente **Deploy latest commit** (non “Redeploy” su un deploy storico dalla lista **Events**).
+3. Usa **Clear build cache & deploy** così non resta una cache legata al vecchio tree.
+4. Se non cambia: **Disconnect** il repository e **ricollegalo**, poi di nuovo deploy da `main`.
+
+## Errore: `Port scan timeout reached, no open ports detected`
+
+L’app deve ascoltare sulla porta indicata dalla variabile d’ambiente **`PORT`** che Render imposta nel container. Il Dockerfile dell’API usa `${PORT:-8000}`. Se nei log di runtime vedi ancora `Uvicorn running on ... 8000` **senza** prima una riga `uvicorn binding port=...` con un numero diverso, stai eseguendo un’immagine costruita da un commit **prima** del fix della porta: aggiorna il deploy come sopra.
