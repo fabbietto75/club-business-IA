@@ -44,10 +44,25 @@ def _normalize_database_url(url: str) -> str:
     return url
 
 
-DATABASE_URL = _normalize_database_url(
-    os.getenv(
-        "DATABASE_URL",
-        "mysql+pymysql://club_user:club_pass@localhost:3306/club_business_ia",
+def _ensure_postgres_ssl(url: str) -> str:
+    """Aggiunge sslmode per PostgreSQL (Render e molti host gestiti richiedono SSL)."""
+    if not url or not url.startswith("postgresql+"):
+        return url
+    if "sslmode=" in url:
+        return url
+    mode = os.getenv("DATABASE_SSLMODE", "require").strip().lower()
+    if mode in ("", "disable", "off", "false", "no"):
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}sslmode={mode}"
+
+
+DATABASE_URL = _ensure_postgres_ssl(
+    _normalize_database_url(
+        os.getenv(
+            "DATABASE_URL",
+            "mysql+pymysql://club_user:club_pass@localhost:3306/club_business_ia",
+        )
     )
 )
 JWT_SECRET = os.getenv("JWT_SECRET", "club_business_ia_secret")
@@ -87,7 +102,10 @@ ALLOWED_ORIGINS = [
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+_engine_kwargs = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("postgresql+"):
+    _engine_kwargs["pool_recycle"] = 300
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -985,7 +1003,12 @@ def get_capacity_stats(db: Session) -> dict:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "python-api"}
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="database_unavailable") from exc
+    return {"status": "ok", "service": "python-api", "database": "ok"}
 
 
 @app.post("/ai/chat")

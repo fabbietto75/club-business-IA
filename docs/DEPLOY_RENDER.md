@@ -29,10 +29,14 @@ Questo progetto e compatibile con [Render](https://render.com) usando PostgreSQL
 
 Ordine consigliato: deploy prima l’**API**, poi imposta `PYTHON_API_URL` sul **web** e ridistribuisci il web.
 
-### Database
+### Database PostgreSQL (persistente)
 
-- Render fornisce `DATABASE_URL` in formato `postgres://...`.
-- L’API normalizza automaticamente in `postgresql+psycopg2://` per SQLAlchemy.
+Il blueprint crea un **PostgreSQL gestito** (`club-business-ia-db`): i dati restano sul disco gestito da Render tra deploy e riavvii del Web Service. Non è un database in-memory né un file locale nel container: è un servizio DB dedicato.
+
+- Render collega l’API con `DATABASE_URL` (formato `postgres://...` o `postgresql://...`).
+- L’API converte in `postgresql+psycopg2://` per SQLAlchemy e, se manca nella URL, aggiunge **`sslmode=require`** (compatibile con le connessioni SSL di Render). Per Postgres locale senza SSL puoi impostare `DATABASE_SSLMODE=disable`.
+- All’avvio: `create_all` + aggiornamenti schema leggeri + seed (admin, prodotti demo, ecc.).
+- **`GET /health`**: risponde `200` solo se l’app **e** il database rispondono (`SELECT 1`), così il health check di Render segnala problemi di connessione al DB.
 
 ### Piano free
 

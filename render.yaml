@@ -2,6 +2,7 @@
 # Dopo il primo deploy dell'API, imposta sui servizi web la variabile PYTHON_API_URL
 # con l'URL pubblico dell'API (es. https://club-api-xxxx.onrender.com).
 
+# PostgreSQL gestito: dati persistenti su storage Render (non nel filesystem del container).
 databases:
   - name: club-business-ia-db
     databaseName: club_business_ia
