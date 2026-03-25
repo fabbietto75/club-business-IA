@@ -2,6 +2,8 @@
 
 Questo progetto e compatibile con [Render](https://render.com) usando PostgreSQL (database gestito) e due Web Service Docker: API FastAPI e frontend Node.
 
+**Porta:** Render imposta la variabile d’ambiente `PORT`. Il Dockerfile dell’API avvia Uvicorn su `${PORT:-8000}` (su Render la porta effettiva non e sempre 8000). Se l’API restasse fissata su 8000, i health check fallirebbero e vedresti riavvii o `CancelledError` nei log.
+
 ## Prerequisiti
 
 - Account GitHub collegato a Render.
