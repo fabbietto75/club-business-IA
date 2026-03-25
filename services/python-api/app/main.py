@@ -57,13 +57,17 @@ def _ensure_postgres_ssl(url: str) -> str:
     return f"{url}{sep}sslmode={mode}"
 
 
-DATABASE_URL = _ensure_postgres_ssl(
-    _normalize_database_url(
-        os.getenv(
-            "DATABASE_URL",
-            "mysql+pymysql://club_user:club_pass@localhost:3306/club_business_ia",
-        )
+_LOCAL_MYSQL_DEFAULT = "mysql+pymysql://club_user:club_pass@localhost:3306/club_business_ia"
+_raw_database_url = os.getenv("DATABASE_URL")
+if os.getenv("RENDER") == "true" and not (_raw_database_url or "").strip():
+    raise RuntimeError(
+        "DATABASE_URL non impostato. Su Render: crea un PostgreSQL, apri il database → "
+        "copia Internal Database URL (o External se serve da fuori) e nel Web Service "
+        "Environment aggiungi DATABASE_URL con quell'URL, poi ridistribuisci."
     )
+
+DATABASE_URL = _ensure_postgres_ssl(
+    _normalize_database_url(_raw_database_url or _LOCAL_MYSQL_DEFAULT)
 )
 JWT_SECRET = os.getenv("JWT_SECRET", "club_business_ia_secret")
 JWT_ALG = "HS256"
