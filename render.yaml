@@ -1,0 +1,68 @@
+# Blueprint Render: https://render.com/docs/infrastructure-as-code
+# Dopo il primo deploy dell'API, imposta sui servizi web la variabile PYTHON_API_URL
+# con l'URL pubblico dell'API (es. https://club-api-xxxx.onrender.com).
+
+databases:
+  - name: club-business-ia-db
+    databaseName: club_business_ia
+    user: club_user
+    plan: free
+
+services:
+  - type: web
+    name: club-business-ia-api
+    runtime: docker
+    region: frankfurt
+    plan: free
+    dockerfilePath: ./services/python-api/Dockerfile
+    dockerContext: ./services/python-api
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: club-business-ia-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        value: Founder Admin
+      - key: ALLOWED_TARGETS
+        value: avvocati,pasticceri,ristoratori,gelatai,parrucchieri,aziende,privati
+      - key: REQUIRE_APPROVAL
+        value: "false"
+      - key: THREE_FACTOR_REQUIRED
+        value: "false"
+      - key: EMAIL_OTP_DEV_EXPOSE
+        value: "false"
+      - key: REQUIRE_REGISTRATION_OTP
+        value: "true"
+      - key: SITE_CAPACITY
+        value: "200"
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: WEBHOOK_AUTH_TOKEN
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+
+  - type: web
+    name: club-business-ia-web
+    runtime: docker
+    region: frankfurt
+    plan: free
+    dockerfilePath: ./services/js-frontend/Dockerfile
+    dockerContext: ./services/js-frontend
+    envVars:
+      - key: PYTHON_API_URL
+        sync: false
+      # PORT è impostato automaticamente da Render; server.js usa process.env.PORT

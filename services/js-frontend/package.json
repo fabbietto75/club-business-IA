@@ -1,0 +1,12 @@
+{
+  "name": "club-business-ia-frontend",
+  "version": "0.1.0",
+  "description": "Frontend starter Club Business IA",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

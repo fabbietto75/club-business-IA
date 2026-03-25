@@ -1,0 +1,87 @@
+{
+  "name": "club-business-ia-mission-completed",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mission-completed",
+        "responseMode": "lastNode"
+      },
+      "id": "WebhookMissionCompleted",
+      "name": "Webhook Mission Completed",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        320,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://python-api:8000/users/{{$json.user_id}}/coins",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"amount\": {{$json.reward}},\n  \"reason\": \"n8n_mission_reward\"\n}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$json.access_token}}"
+            }
+          ]
+        }
+      },
+      "id": "AddCoinsRequest",
+      "name": "Add Coins Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        620,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"status\": \"ok\", \"message\": \"Coins updated\" }"
+      },
+      "id": "RespondWebhook",
+      "name": "Respond Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        900,
+        280
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Mission Completed": {
+      "main": [
+        [
+          {
+            "node": "Add Coins Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Coins Request": {
+      "main": [
+        [
+          {
+            "node": "Respond Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "versionId": "1"
+}

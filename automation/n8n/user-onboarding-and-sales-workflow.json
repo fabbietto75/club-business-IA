@@ -1,0 +1,120 @@
+{
+  "name": "club-business-ia-onboarding-sales",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "user-registered",
+        "responseMode": "lastNode"
+      },
+      "id": "WebhookUserRegistered",
+      "name": "Webhook User Registered",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [260, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.user_id}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "IFValidPayload",
+      "name": "IF Valid Payload",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 260]
+    },
+    {
+      "parameters": {
+        "url": "http://python-api:8000/users/{{$json.user_id}}/coins",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"amount\": 10, \"reason\": \"welcome_bonus_n8n\" }",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{$json.access_token}}" }
+          ]
+        }
+      },
+      "id": "WelcomeCoins",
+      "name": "Welcome Coins",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [740, 180]
+    },
+    {
+      "parameters": {
+        "url": "http://python-api:8000/community/posts",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"content\": \"Nuovo utente entrato nel Club Business IA\" }",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{$json.access_token}}" }
+          ]
+        }
+      },
+      "id": "CommunityWelcomePost",
+      "name": "Community Welcome Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [740, 340]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"status\": \"ok\", \"flow\": \"onboarding_sales\" }"
+      },
+      "id": "RespondOK",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [990, 260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"status\": \"error\", \"message\": \"invalid payload\" }"
+      },
+      "id": "RespondError",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [740, 500]
+    }
+  ],
+  "connections": {
+    "Webhook User Registered": {
+      "main": [[{ "node": "IF Valid Payload", "type": "main", "index": 0 }]]
+    },
+    "IF Valid Payload": {
+      "main": [
+        [
+          { "node": "Welcome Coins", "type": "main", "index": 0 },
+          { "node": "Community Welcome Post", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Respond Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Welcome Coins": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    },
+    "Community Welcome Post": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "versionId": "1"
+}
