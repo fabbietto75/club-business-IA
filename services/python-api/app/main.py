@@ -98,7 +98,14 @@ PASSWORD_RESET_DEV_EXPOSE = os.getenv(
     "PASSWORD_RESET_DEV_EXPOSE",
     os.getenv("EMAIL_OTP_DEV_EXPOSE", "false"),
 ).lower() == "true"
-REQUIRE_REGISTRATION_OTP = os.getenv("REQUIRE_REGISTRATION_OTP", "true").lower() == "true"
+# OTP prima della registrazione (flusso legacy). Default false.
+# Nota: non si legge piu REQUIRE_REGISTRATION_OTP (vecchia variabile Render).
+# Solo ENABLE_LEGACY_PRE_SIGNUP_OTP=true attiva il flusso legacy (OTP prima del signup).
+ENABLE_LEGACY_PRE_SIGNUP_OTP = (
+    os.getenv("ENABLE_LEGACY_PRE_SIGNUP_OTP", "false").lower() == "true"
+)
+SEND_POST_REGISTRATION_OTP = os.getenv("SEND_POST_REGISTRATION_OTP", "true").lower() == "true"
+REQUIRE_EMAIL_VERIFICATION = os.getenv("REQUIRE_EMAIL_VERIFICATION", "true").lower() == "true"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 SITE_CAPACITY = int(os.getenv("SITE_CAPACITY", "200"))
@@ -143,6 +150,7 @@ class User(Base):
     failed_login_attempts = Column(Integer, nullable=False, default=0)
     locked_until = Column(DateTime, nullable=True)
     last_login_at = Column(DateTime, nullable=True)
+    email_verified = Column(Boolean, nullable=False, default=True)
     coins = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -472,6 +480,7 @@ class UserOut(BaseModel):
     profile_mode: str = "privato"
     company_photo_url: Optional[str] = None
     coins: int
+    email_verified: bool = True
 
     class Config:
         from_attributes = True
@@ -616,6 +625,17 @@ class ForgotPasswordIn(BaseModel):
     email: EmailStr
 
 
+class VerifyRegistrationEmailIn(BaseModel):
+    email: EmailStr
+    code: str
+
+
+class UserSignupResponse(BaseModel):
+    user: UserOut
+    message: str
+    dev_registration_code: Optional[str] = None
+
+
 class AIChatIn(BaseModel):
     message: str
 
@@ -750,6 +770,7 @@ def ensure_schema_updates() -> None:
         "failed_login_attempts": "INTEGER NOT NULL DEFAULT 0",
         "locked_until": dt_null,
         "last_login_at": dt_null,
+        "email_verified": "BOOLEAN NOT NULL DEFAULT TRUE",
     }
 
     with engine.begin() as conn:
@@ -776,6 +797,7 @@ def seed_default_data() -> None:
                     target_segment="aziende",
                     is_approved=True,
                     coins=100,
+                    email_verified=True,
                 )
             )
         if db.query(Product).count() == 0:
@@ -905,6 +927,63 @@ def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
         smtp.send_message(msg)
 
 
+def send_registration_verification_email(to_addr: str, user_name: str, otp_code: str) -> None:
+    from_addr = (os.getenv("SMTP_FROM") or os.getenv("SMTP_USER") or "").strip()
+    if not from_addr:
+        raise RuntimeError("SMTP_FROM o SMTP_USER richiesto per l'invio email")
+    subject = "Club Business IA - verifica la tua email"
+    body = (
+        f"Ciao {user_name},\n\n"
+        "Grazie per esserti registrato su Club Business IA.\n\n"
+        f"Il tuo codice di verifica e: {otp_code}\n"
+        "(valido 10 minuti). Inseriscilo nel sito nella sezione Verifica email.\n\n"
+        "Se non hai creato tu l'account, ignora questo messaggio.\n"
+    )
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg.set_content(body)
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+    with smtplib.SMTP(host, port, timeout=30) as smtp:
+        smtp.ehlo()
+        if use_tls:
+            smtp.starttls()
+            smtp.ehlo()
+        smtp.login(user, password)
+        smtp.send_message(msg)
+
+
+def _issue_post_registration_otp(db: Session, user: User, segment: str) -> Optional[str]:
+    """Genera OTP dopo la registrazione e invia email. In dev senza SMTP puo restituire il codice."""
+    email = user.email
+    db.query(RegistrationOtp).filter(RegistrationOtp.email == email).delete()
+    otp_code = generate_numeric_otp(6)
+    db.add(
+        RegistrationOtp(
+            email=email,
+            otp_code=otp_code,
+            target_segment=segment,
+            expires_at=otp_expiration(10),
+            used=False,
+        )
+    )
+    db.commit()
+    if _smtp_configured():
+        try:
+            send_registration_verification_email(user.email, user.name, otp_code)
+        except Exception:
+            pass
+        return None
+    if EMAIL_OTP_DEV_EXPOSE:
+        return otp_code
+    return None
+
+
 def create_token_record(db: Session, user: User, token_type: str, expires_at: datetime) -> str:
     token_jti = str(uuid.uuid4())
     db.add(
@@ -1025,7 +1104,10 @@ def feature_enabled_or_503(db: Session, key: str) -> None:
 def local_chat_fallback(message: str) -> str:
     q = message.lower()
     if "registr" in q:
-        return "Per registrarti: seleziona target, richiedi OTP registrazione, inserisci OTP e completa il form."
+        return (
+            "Per registrarti: compila nome, email, password e target su / poi conferma il codice "
+            "ricevuto via email se richiesto."
+        )
     if "2fa" in q or "otp" in q or "sicurezza" in q:
         return "Per la sicurezza: attiva Google Authenticator da setup MFA e usa OTP email se la 3FA e attiva."
     if "carrello" in q or "ordine" in q or "ecommerce" in q:
@@ -1098,7 +1180,15 @@ def get_capacity_stats(db: Session) -> dict:
 @app.get("/health")
 def health():
     """Liveness per Render: nessuna query DB (evita fallimenti sporadici del probe)."""
-    return {"status": "ok", "service": "python-api"}
+    return {
+        "status": "ok",
+        "service": "python-api",
+        "registration": {
+            "require_otp_before_signup": ENABLE_LEGACY_PRE_SIGNUP_OTP,
+            "send_post_registration_otp": SEND_POST_REGISTRATION_OTP,
+            "require_email_verification_to_login": REQUIRE_EMAIL_VERIFICATION,
+        },
+    }
 
 
 @app.get("/health/ready")
@@ -1122,7 +1212,7 @@ def ai_chat(payload: AIChatIn, db: Session = Depends(get_db)):
     return {"reply": reply, "model": OPENAI_MODEL if OPENAI_API_KEY else "fallback-local"}
 
 
-@app.post("/users", response_model=UserOut)
+@app.post("/users", response_model=UserSignupResponse)
 def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
@@ -1133,7 +1223,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=reason)
 
     segment = validate_target_segment(payload.target_segment)
-    if REQUIRE_REGISTRATION_OTP:
+    if ENABLE_LEGACY_PRE_SIGNUP_OTP:
         if not payload.registration_otp_code:
             raise HTTPException(status_code=400, detail="OTP registrazione obbligatorio")
         reg_otp = (
@@ -1153,6 +1243,11 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         ):
             raise HTTPException(status_code=401, detail="OTP registrazione non valido o scaduto")
         reg_otp.used = True
+        email_verified = True
+        post_registration_otp = False
+    else:
+        post_registration_otp = bool(SEND_POST_REGISTRATION_OTP)
+        email_verified = not post_registration_otp
 
     user = User(
         name=payload.name.strip(),
@@ -1162,6 +1257,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         target_segment=segment,
         is_approved=not REQUIRE_APPROVAL,
         coins=5,  # Bonus registrazione
+        email_verified=email_verified,
     )
 
     free_seat = (
@@ -1183,7 +1279,22 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     free_seat.assigned_at = datetime.utcnow()
     db.commit()
     db.refresh(user)
-    return user
+
+    dev_code: Optional[str] = None
+    msg = "Registrazione completata."
+    if not ENABLE_LEGACY_PRE_SIGNUP_OTP and post_registration_otp:
+        msg = (
+            "Registrazione completata. Ti abbiamo inviato un codice via email "
+            "per verificare l'account (controlla anche spam)."
+        )
+        dev_code = _issue_post_registration_otp(db, user, segment)
+        db.refresh(user)
+
+    return UserSignupResponse(
+        user=user,
+        message=msg,
+        dev_registration_code=dev_code if EMAIL_OTP_DEV_EXPOSE else None,
+    )
 
 
 @app.get("/site/capacity", response_model=CapacityOut)
@@ -1221,6 +1332,33 @@ def request_registration_otp(payload: RequestRegistrationOtpIn, db: Session = De
     return response
 
 
+@app.post("/auth/verify-registration-email")
+def verify_registration_email(payload: VerifyRegistrationEmailIn, db: Session = Depends(get_db)):
+    email = str(payload.email).lower()
+    code = str(payload.code).strip()
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    if user.email_verified:
+        return {"status": "ok", "message": "Email gia verificata."}
+    reg_otp = (
+        db.query(RegistrationOtp)
+        .filter(
+            RegistrationOtp.email == email,
+            RegistrationOtp.used == False,  # noqa: E712
+            RegistrationOtp.otp_code == code,
+        )
+        .order_by(RegistrationOtp.id.desc())
+        .first()
+    )
+    if not reg_otp or reg_otp.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="Codice non valido o scaduto")
+    reg_otp.used = True
+    user.email_verified = True
+    db.commit()
+    return {"status": "ok", "message": "Email verificata. Puoi ora accedere."}
+
+
 @app.post("/auth/login", response_model=TokenOut)
 def login(payload: LoginIn, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == str(payload.email).lower()).first()
@@ -1240,6 +1378,11 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
     if not user.is_approved:
         raise HTTPException(status_code=403, detail="Account in attesa di approvazione admin")
+    if REQUIRE_EMAIL_VERIFICATION and not user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Verifica prima la tua email con il codice ricevuto dopo la registrazione.",
+        )
     validate_target_segment(user.target_segment)
     if user.mfa_enabled:
         if not payload.totp_code:

@@ -4,6 +4,12 @@ const app = express();
 const port = Number(process.env.PORT || 3000);
 const apiPublicBase = process.env.PYTHON_API_URL || "http://localhost:8000";
 const pythonApi = apiPublicBase;
+/** Commit Render / variabile manuale: per capire se il browser mostra l’ultimo deploy */
+const FRONTEND_BUILD = (
+  process.env.RENDER_GIT_COMMIT ||
+  process.env.BUILD_STAMP ||
+  "dev"
+).slice(0, 12);
 
 app.use(express.json());
 
@@ -29,6 +35,13 @@ app.post("/api/registration/request-otp", (req, res) =>
   proxyApi(req, res, "POST", "/auth/registration/request-otp")
 );
 app.post("/api/register", (req, res) => proxyApi(req, res, "POST", "/users"));
+/** GET nel browser: la registrazione e solo POST; reindirizza al form sulla homepage */
+app.get("/api/register", (_req, res) => {
+  res.redirect(302, "/#registrazione");
+});
+app.post("/api/verify-registration-email", (req, res) =>
+  proxyApi(req, res, "POST", "/auth/verify-registration-email")
+);
 app.post("/api/request-email-otp", (req, res) =>
   proxyApi(req, res, "POST", "/auth/request-email-otp")
 );
@@ -935,11 +948,14 @@ app.get("/backend", (_req, res) => {
 });
 
 app.get("/", (_req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.set("Pragma", "no-cache");
   res.type("html").send(`
 <!doctype html>
-<html>
+<html lang="it" data-build="${FRONTEND_BUILD}">
 <head>
   <meta charset="UTF-8" />
+  <meta name="app-build" content="${FRONTEND_BUILD}" />
   <title>Club Business IA</title>
   <meta name="theme-color" content="#1f2850" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -1215,7 +1231,7 @@ app.get("/", (_req, res) => {
       </article>
       <article class="feature">
         <h3>Sicura</h3>
-        <p>Registrazione protetta con OTP e login con autenticazione avanzata.</p>
+        <p>Dopo la registrazione ricevi un codice via email per verificare l'account.</p>
       </article>
       <article class="feature">
         <h3>Personalizzabile</h3>
@@ -1256,10 +1272,25 @@ app.get("/", (_req, res) => {
           <option value="aziende">Aziende</option>
           <option value="privati">Privati</option>
         </select>
-        <input id="regOtpCode" placeholder="OTP registrazione" />
         <button onclick="registerUser()">Crea account</button>
         <button class="secondary" onclick="showLoginCard()">Hai gia un account? Vai al login</button>
-        <p class="small">Inserisci il codice OTP ricevuto via email se richiesto dal sistema.</p>
+        <button
+          type="button"
+          class="secondary"
+          style="margin-top:8px;background:transparent;border:1px solid #64748b;color:#e2e8f0;font-weight:700"
+          onclick="showVerifyCard()"
+        >
+          Ho un codice di verifica email
+        </button>
+        <p class="small">Nessun codice qui: dopo la registrazione ricevi il codice via email e lo inserisci nella sezione che si apre sotto.</p>
+      </div>
+
+      <div id="verifyCard" class="card hidden">
+        <h2>Verifica email (dopo registrazione)</h2>
+        <input id="verifyEmail" placeholder="Email usata in registrazione" />
+        <input id="verifyCode" placeholder="Codice a 6 cifre dall'email" />
+        <button onclick="verifyRegistrationEmail()">Conferma codice</button>
+        <p class="small">Inserisci il codice ricevuto dopo la registrazione per sbloccare il login.</p>
       </div>
 
       <div id="loginCard" class="card hidden">
@@ -1302,9 +1333,10 @@ app.get("/", (_req, res) => {
 
     <footer class="footer">
       <div><strong>Club Business IA</strong> · design professionale orientato alla conversione</div>
+      <p class="small muted" style="margin:8px 0 0 0;opacity:0.75">Versione interfaccia: ${FRONTEND_BUILD}</p>
       <div class="badges">
         <span class="badge">SSL Ready</span>
-        <span class="badge">OTP Security</span>
+        <span class="badge">Verifica email</span>
         <span class="badge">Role Based Access</span>
         <span class="badge">Scalabile</span>
       </div>
@@ -1375,6 +1407,11 @@ app.get("/", (_req, res) => {
       loginCard.classList.remove("hidden");
       loginCard.scrollIntoView({ behavior: "smooth", block: "start" });
     }
+    function showVerifyCard() {
+      const verifyCard = document.getElementById("verifyCard");
+      verifyCard.classList.remove("hidden");
+      verifyCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
 
     async function registerUser() {
       try {
@@ -1382,18 +1419,42 @@ app.get("/", (_req, res) => {
           name: regName.value,
           email: regEmail.value,
           password: regPassword.value,
-          target_segment: regTarget.value,
-          registration_otp_code: regOtpCode.value || null
+          target_segment: regTarget.value
         });
-        setOut(data);
         const email = (regEmail.value || "").trim().toLowerCase();
+        const payload = {
+          message: data.message || "",
+          user: data.user || null,
+          dev_registration_code: data.dev_registration_code || null
+        };
+        setOut(payload);
         if (email) {
           localStorage.setItem("club_last_email", email);
           const le = document.getElementById("logEmail");
           if (le) le.value = email;
+          const ve = document.getElementById("verifyEmail");
+          if (ve) ve.value = email;
         }
-        showLoginCard();
+        const vc = document.getElementById("verifyCode");
+        if (vc) vc.value = "";
+        showVerifyCard();
       } catch (e) { setOut(e.message); }
+    }
+    async function verifyRegistrationEmail() {
+      try {
+        const email = (document.getElementById("verifyEmail").value || "").trim();
+        const code = (document.getElementById("verifyCode").value || "").trim();
+        if (!email || !code) {
+          setOut("Inserisci email e codice a 6 cifre.");
+          return;
+        }
+        const data = await api("/api/verify-registration-email", { email, code });
+        setOut(data);
+        document.getElementById("verifyCard")?.classList.add("hidden");
+        showLoginCard();
+      } catch (e) {
+        setOut(e.message);
+      }
     }
     async function loginUser() {
       try {

@@ -41,7 +41,23 @@ services:
         value: "false"
       - key: EMAIL_OTP_DEV_EXPOSE
         value: "false"
-      - key: REQUIRE_REGISTRATION_OTP
+      - key: ENABLE_LEGACY_PRE_SIGNUP_OTP
+        value: "false"
+      - key: SEND_POST_REGISTRATION_OTP
+        value: "true"
+      - key: REQUIRE_EMAIL_VERIFICATION
+        value: "true"
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: SMTP_USE_TLS
         value: "true"
       - key: SITE_CAPACITY
         value: "200"

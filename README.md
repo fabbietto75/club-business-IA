@@ -156,7 +156,7 @@ Variabili ambiente utili nel servizio `python-api`:
 - `REQUIRE_APPROVAL` (se true, serve approvazione admin account)
 - `THREE_FACTOR_REQUIRED` (se true: password + Google Auth + OTP email)
 - `EMAIL_OTP_DEV_EXPOSE` (solo sviluppo: mostra OTP in risposta API)
-- `REQUIRE_REGISTRATION_OTP` (se true, registrazione consentita solo con OTP)
+- `ENABLE_LEGACY_PRE_SIGNUP_OTP` (se true, flusso legacy: OTP prima del signup; default false)
 - `OPENAI_API_KEY` (chiave provider IA)
 - `OPENAI_MODEL` (modello chat, default `gpt-4o-mini`)
 
@@ -172,7 +172,7 @@ Modifica questi valori da variabili ambiente in produzione.
 ## Accesso per target + sicurezza 2FA/3FA
 
 - Registrazione consentita solo ai target in `ALLOWED_TARGETS`.
-- Registrazione protetta da OTP (`/auth/registration/request-otp`) se `REQUIRE_REGISTRATION_OTP=true`.
+- Flusso legacy (OTP prima del signup): solo se `ENABLE_LEGACY_PRE_SIGNUP_OTP=true` (endpoint `/auth/registration/request-otp`).
 - Se `REQUIRE_APPROVAL=true`, ogni nuovo account deve essere approvato da admin:
   - endpoint: `PATCH /admin/users/{id}/approval`
 - 2FA Google:
