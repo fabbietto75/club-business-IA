@@ -1069,6 +1069,7 @@ app.get("/", (_req, res) => {
       cursor:pointer;
     }
     .secondary{background:linear-gradient(135deg,#6d28d9,#db2777)}
+    .hidden{display:none}
     .output{
       margin-top:14px;
       border:1px solid var(--border);
@@ -1239,24 +1240,19 @@ app.get("/", (_req, res) => {
           <option value="privati">Privati</option>
         </select>
         <input id="regOtpCode" placeholder="OTP registrazione" />
-        <button class="secondary" onclick="requestRegistrationOtp()">Richiedi OTP Registrazione</button>
         <button onclick="registerUser()">Crea account</button>
-        <p class="small">Prima richiedi OTP, poi inserisci il codice e completa la registrazione.</p>
+        <button class="secondary" onclick="showLoginCard()">Hai gia un account? Vai al login</button>
+        <p class="small">Inserisci il codice OTP ricevuto via email se richiesto dal sistema.</p>
       </div>
 
-      <div class="card">
+      <div id="loginCard" class="card hidden">
         <h2>Login Utenti</h2>
         <input id="logEmail" placeholder="Email" />
         <input id="logPassword" type="password" placeholder="Password" />
         <input id="logTotp" placeholder="Codice Google Authenticator (se attivo)" />
         <input id="logEmailOtp" placeholder="Codice OTP Email (se richiesto)" />
-        <button class="secondary" onclick="requestEmailOtp()">Richiedi OTP Email</button>
         <button onclick="loginUser()">Accedi</button>
         <p class="small">Dopo il login il backend gestisce tutte le funzioni avanzate.</p>
-        <div class="quick-links">
-          <a href="/backend">Apri area backend</a>
-          <a href="${apiPublicBase}/docs" target="_blank" rel="noreferrer">Apri API docs</a>
-        </div>
       </div>
     </section>
 
@@ -1305,15 +1301,12 @@ app.get("/", (_req, res) => {
       if (!res.ok) throw new Error(data.detail || "Errore API");
       return data;
     }
-    async function requestRegistrationOtp() {
-      try {
-        const data = await api("/api/registration/request-otp", {
-          email: regEmail.value,
-          target_segment: regTarget.value
-        });
-        setOut(data);
-      } catch (e) { setOut(e.message); }
+    function showLoginCard() {
+      const loginCard = document.getElementById("loginCard");
+      loginCard.classList.remove("hidden");
+      loginCard.scrollIntoView({ behavior: "smooth", block: "start" });
     }
+
     async function registerUser() {
       try {
         const data = await api("/api/register", {
@@ -1324,15 +1317,7 @@ app.get("/", (_req, res) => {
           registration_otp_code: regOtpCode.value || null
         });
         setOut(data);
-      } catch (e) { setOut(e.message); }
-    }
-    async function requestEmailOtp() {
-      try {
-        const data = await api("/api/request-email-otp", {
-          email: logEmail.value,
-          password: logPassword.value
-        });
-        setOut(data);
+        showLoginCard();
       } catch (e) { setOut(e.message); }
     }
     async function loginUser() {
