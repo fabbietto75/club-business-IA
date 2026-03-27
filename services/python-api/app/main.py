@@ -1,6 +1,10 @@
 import os
+import secrets
+import smtplib
+import string
 import uuid
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from decimal import Decimal
 from typing import Optional
 
@@ -90,6 +94,10 @@ ALLOWED_TARGETS = {
 REQUIRE_APPROVAL = os.getenv("REQUIRE_APPROVAL", "false").lower() == "true"
 THREE_FACTOR_REQUIRED = os.getenv("THREE_FACTOR_REQUIRED", "false").lower() == "true"
 EMAIL_OTP_DEV_EXPOSE = os.getenv("EMAIL_OTP_DEV_EXPOSE", "true").lower() == "true"
+PASSWORD_RESET_DEV_EXPOSE = os.getenv(
+    "PASSWORD_RESET_DEV_EXPOSE",
+    os.getenv("EMAIL_OTP_DEV_EXPOSE", "false"),
+).lower() == "true"
 REQUIRE_REGISTRATION_OTP = os.getenv("REQUIRE_REGISTRATION_OTP", "true").lower() == "true"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -604,6 +612,10 @@ class RequestRegistrationOtpIn(BaseModel):
     target_segment: str
 
 
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
 class AIChatIn(BaseModel):
     message: str
 
@@ -842,6 +854,55 @@ def verify_password(raw_password: str, password_hash: str) -> bool:
     import hashlib
 
     return hashlib.sha256(raw_password.encode("utf-8")).hexdigest() == password_hash
+
+
+def generate_secure_temporary_password() -> str:
+    alphabet = string.ascii_letters + string.digits
+    for _ in range(120):
+        pwd = "".join(secrets.choice(alphabet) for _ in range(14))
+        ok, _ = password_security_check(pwd)
+        if ok:
+            return pwd
+    return "Aa1" + secrets.token_urlsafe(12)
+
+
+def _smtp_configured() -> bool:
+    return bool(
+        (os.getenv("SMTP_HOST") or "").strip()
+        and (os.getenv("SMTP_USER") or "").strip()
+        and (os.getenv("SMTP_PASSWORD") or "").strip()
+    )
+
+
+def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
+    from_addr = (os.getenv("SMTP_FROM") or os.getenv("SMTP_USER") or "").strip()
+    if not from_addr:
+        raise RuntimeError("SMTP_FROM o SMTP_USER richiesto per l'invio email")
+    subject = "Club Business IA - nuova password"
+    body = (
+        "Ciao,\n\n"
+        "Hai richiesto il reset della password per il tuo account Club Business IA.\n\n"
+        f"Nuova password temporanea: {new_password_plain}\n\n"
+        "Accedi e cambiala al piu presto.\n\n"
+        "Se non hai richiesto tu questa operazione, contatta il supporto.\n"
+    )
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg.set_content(body)
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+    with smtplib.SMTP(host, port, timeout=30) as smtp:
+        smtp.ehlo()
+        if use_tls:
+            smtp.starttls()
+            smtp.ehlo()
+        smtp.login(user, password)
+        smtp.send_message(msg)
 
 
 def create_token_record(db: Session, user: User, token_type: str, expires_at: datetime) -> str:
@@ -1264,6 +1325,49 @@ def change_password(
     db.commit()
     revoke_all_user_tokens(db, current_user.id)
     return {"status": "ok", "message": "Password aggiornata. Effettua di nuovo il login."}
+
+
+@app.post("/auth/forgot-password")
+def forgot_password(payload: ForgotPasswordIn, db: Session = Depends(get_db)):
+    """Genera una nuova password e la invia via email (SMTP). Risposta sempre generica."""
+    email = str(payload.email).lower().strip()
+    generic = {
+        "status": "ok",
+        "message": "Se l'indirizzo e registrato, riceverai una nuova password via email a breve.",
+    }
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        return generic
+
+    new_pwd = generate_secure_temporary_password()
+
+    if _smtp_configured():
+        try:
+            send_password_reset_email(user.email, new_pwd)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Invio email non riuscito. Verifica SMTP o riprova piu tardi.",
+            ) from exc
+        user.password_hash = hash_password(new_pwd)
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        revoke_all_user_tokens(db, user.id)
+        return generic
+
+    if PASSWORD_RESET_DEV_EXPOSE:
+        user.password_hash = hash_password(new_pwd)
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        revoke_all_user_tokens(db, user.id)
+        return {
+            "status": "ok",
+            "message": generic["message"]
+            + " (sviluppo: nuova password anche nel campo dev_new_password.)",
+            "dev_new_password": new_pwd,
+        }
+
+    return generic
 
 
 @app.get("/auth/me", response_model=UserOut)

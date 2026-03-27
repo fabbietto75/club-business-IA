@@ -33,6 +33,9 @@ app.post("/api/request-email-otp", (req, res) =>
   proxyApi(req, res, "POST", "/auth/request-email-otp")
 );
 app.post("/api/login", (req, res) => proxyApi(req, res, "POST", "/auth/login"));
+app.post("/api/forgot-password", (req, res) =>
+  proxyApi(req, res, "POST", "/auth/forgot-password")
+);
 app.get("/api/auth/me", (req, res) => proxyApi(req, res, "GET", "/auth/me"));
 app.patch("/api/account/profile", (req, res) => proxyApi(req, res, "PATCH", "/account/profile"));
 app.get("/api/wallet/me", (req, res) => proxyApi(req, res, "GET", "/wallet/me"));
@@ -1266,6 +1269,14 @@ app.get("/", (_req, res) => {
         <input id="logTotp" placeholder="Codice Google Authenticator (se attivo)" />
         <input id="logEmailOtp" placeholder="Codice OTP Email (se richiesto)" />
         <button onclick="loginUser()">Accedi</button>
+        <button
+          type="button"
+          class="secondary"
+          style="margin-top:8px;background:transparent;border:1px solid #64748b;color:#e2e8f0;font-weight:700"
+          onclick="forgotPassword()"
+        >
+          Password dimenticata
+        </button>
         <p class="small">Dopo il login il backend gestisce tutte le funzioni avanzate.</p>
       </div>
     </section>
@@ -1397,6 +1408,19 @@ app.get("/", (_req, res) => {
         setOut({ status: "login_ok", message: "Accesso effettuato con successo." });
         setTimeout(() => { window.location.href = "/backend"; }, 600);
       } catch (e) { setOut(e.message); }
+    }
+    async function forgotPassword() {
+      try {
+        const email = (document.getElementById("logEmail").value || "").trim();
+        if (!email) {
+          setOut("Inserisci la tua email nel campo sopra, poi clicca Password dimenticata.");
+          return;
+        }
+        const data = await api("/api/forgot-password", { email });
+        setOut(data);
+      } catch (e) {
+        setOut(e.message);
+      }
     }
   </script>
 </body>
