@@ -1,3 +1,4 @@
+import logging
 import os
 import secrets
 import smtplib
@@ -37,6 +38,9 @@ from .security_plugin import (
     password_security_check,
     verify_google_totp,
 )
+
+logger = logging.getLogger(__name__)
+
 
 def _normalize_database_url(url: str) -> str:
     if not url:
@@ -87,7 +91,7 @@ ALLOWED_TARGETS = {
     x.strip().lower()
     for x in os.getenv(
         "ALLOWED_TARGETS",
-        "avvocati,pasticceri,ristoratori,gelatai,parrucchieri,aziende,privati",
+        "avvocati,pasticceri,ristoratori,gelatai,parrucchieri,medici,commercialisti,ingegneri,architetti,geometri,notai,ragionieri,consulenti_fiscali,consulenti_lavoro,agenti_immobiliari,farmacie,dentisti,veterinari,psicologi,fotografi,videomaker,estetisti,personal_trainer,alberghi,agriturismi,imprese_edili,elettricisti,idraulici,meccanici,influencer,wedding_planner,aziende,privati",
     ).split(",")
     if x.strip()
 }
@@ -896,6 +900,36 @@ def _smtp_configured() -> bool:
     )
 
 
+def _smtp_send_message(msg: EmailMessage) -> None:
+    """Invio via SMTP (Brevo, Gmail app password, ecc.). Credenziali solo da variabili d'ambiente."""
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+    use_ssl = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
+    debug = os.getenv("SMTP_DEBUG", "false").lower() == "true"
+
+    if use_ssl:
+        # Es. Brevo porta 465: SSL diretto (senza STARTTLS)
+        with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
+            if debug:
+                smtp.set_debuglevel(1)
+            smtp.login(user, password)
+            smtp.send_message(msg)
+        return
+
+    with smtplib.SMTP(host, port, timeout=30) as smtp:
+        if debug:
+            smtp.set_debuglevel(1)
+        smtp.ehlo()
+        if use_tls:
+            smtp.starttls()
+            smtp.ehlo()
+        smtp.login(user, password)
+        smtp.send_message(msg)
+
+
 def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
     from_addr = (os.getenv("SMTP_FROM") or os.getenv("SMTP_USER") or "").strip()
     if not from_addr:
@@ -913,18 +947,7 @@ def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
     msg["From"] = from_addr
     msg["To"] = to_addr
     msg.set_content(body)
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
-    with smtplib.SMTP(host, port, timeout=30) as smtp:
-        smtp.ehlo()
-        if use_tls:
-            smtp.starttls()
-            smtp.ehlo()
-        smtp.login(user, password)
-        smtp.send_message(msg)
+    _smtp_send_message(msg)
 
 
 def send_registration_verification_email(to_addr: str, user_name: str, otp_code: str) -> None:
@@ -944,22 +967,14 @@ def send_registration_verification_email(to_addr: str, user_name: str, otp_code:
     msg["From"] = from_addr
     msg["To"] = to_addr
     msg.set_content(body)
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
-    with smtplib.SMTP(host, port, timeout=30) as smtp:
-        smtp.ehlo()
-        if use_tls:
-            smtp.starttls()
-            smtp.ehlo()
-        smtp.login(user, password)
-        smtp.send_message(msg)
+    _smtp_send_message(msg)
 
 
-def _issue_post_registration_otp(db: Session, user: User, segment: str) -> Optional[str]:
-    """Genera OTP dopo la registrazione e invia email. In dev senza SMTP puo restituire il codice."""
+def _issue_post_registration_otp(db: Session, user: User, segment: str) -> tuple[Optional[str], str]:
+    """Genera OTP post-registrazione. Ritorna (codice_per_json_se_abilitato, esito).
+
+    esito: \"sent\" | \"no_smtp\" | \"smtp_failed\"
+    """
     email = user.email
     db.query(RegistrationOtp).filter(RegistrationOtp.email == email).delete()
     otp_code = generate_numeric_otp(6)
@@ -973,15 +988,22 @@ def _issue_post_registration_otp(db: Session, user: User, segment: str) -> Optio
         )
     )
     db.commit()
-    if _smtp_configured():
-        try:
-            send_registration_verification_email(user.email, user.name, otp_code)
-        except Exception:
-            pass
-        return None
-    if EMAIL_OTP_DEV_EXPOSE:
-        return otp_code
-    return None
+    dev_for_response = otp_code if EMAIL_OTP_DEV_EXPOSE else None
+
+    if not _smtp_configured():
+        logger.warning(
+            "SMTP non configurato: nessuna email inviata per verifica %s. "
+            "Serve SMTP_HOST + SMTP_USER + SMTP_PASSWORD (e SMTP_FROM consigliato).",
+            email,
+        )
+        return dev_for_response, "no_smtp"
+
+    try:
+        send_registration_verification_email(user.email, user.name, otp_code)
+        return dev_for_response, "sent"
+    except Exception:
+        logger.exception("Invio email verifica registrazione fallito per %s", email)
+        return dev_for_response, "smtp_failed"
 
 
 def create_token_record(db: Session, user: User, token_type: str, expires_at: datetime) -> str:
@@ -1187,6 +1209,7 @@ def health():
             "require_otp_before_signup": ENABLE_LEGACY_PRE_SIGNUP_OTP,
             "send_post_registration_otp": SEND_POST_REGISTRATION_OTP,
             "require_email_verification_to_login": REQUIRE_EMAIL_VERIFICATION,
+            "smtp_configured": _smtp_configured(),
         },
     }
 
@@ -1283,17 +1306,29 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     dev_code: Optional[str] = None
     msg = "Registrazione completata."
     if not ENABLE_LEGACY_PRE_SIGNUP_OTP and post_registration_otp:
-        msg = (
-            "Registrazione completata. Ti abbiamo inviato un codice via email "
-            "per verificare l'account (controlla anche spam)."
-        )
-        dev_code = _issue_post_registration_otp(db, user, segment)
+        dev_code, otp_outcome = _issue_post_registration_otp(db, user, segment)
         db.refresh(user)
+        if otp_outcome == "no_smtp":
+            msg = (
+                "Registrazione completata. L'invio email non e configurato sul server: "
+                "imposta SMTP_HOST, SMTP_USER, SMTP_PASSWORD e SMTP_FROM (es. su Render). "
+                "Controlla GET /health → registration.smtp_configured."
+            )
+        elif otp_outcome == "smtp_failed":
+            msg = (
+                "Registrazione completata ma l'email con il codice non e partita. "
+                "Verifica credenziali SMTP nei log del server e riprova."
+            )
+        else:
+            msg = (
+                "Registrazione completata. Ti abbiamo inviato un codice via email "
+                "per verificare l'account (controlla anche spam)."
+            )
 
     return UserSignupResponse(
         user=user,
         message=msg,
-        dev_registration_code=dev_code if EMAIL_OTP_DEV_EXPOSE else None,
+        dev_registration_code=dev_code,
     )
 
 

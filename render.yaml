@@ -34,7 +34,7 @@ services:
       - key: ADMIN_NAME
         value: Founder Admin
       - key: ALLOWED_TARGETS
-        value: avvocati,pasticceri,ristoratori,gelatai,parrucchieri,aziende,privati
+        value: avvocati,pasticceri,ristoratori,gelatai,parrucchieri,medici,commercialisti,ingegneri,architetti,geometri,notai,ragionieri,consulenti_fiscali,consulenti_lavoro,agenti_immobiliari,farmacie,dentisti,veterinari,psicologi,fotografi,videomaker,estetisti,personal_trainer,alberghi,agriturismi,imprese_edili,elettricisti,idraulici,meccanici,influencer,wedding_planner,aziende,privati
       - key: REQUIRE_APPROVAL
         value: "false"
       - key: THREE_FACTOR_REQUIRED
