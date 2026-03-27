@@ -2,7 +2,10 @@ const express = require("express");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
-const apiPublicBase = process.env.PYTHON_API_URL || "http://localhost:8000";
+/** Base URL API Python (senza slash finale): stesso valore per proxy e link Swagger */
+const apiPublicBase = String(
+  process.env.PYTHON_API_URL || "http://localhost:8000"
+).replace(/\/+$/, "");
 const pythonApi = apiPublicBase;
 /** Commit Render / variabile manuale: per capire se il browser mostra l’ultimo deploy */
 const FRONTEND_BUILD = (
@@ -13,23 +16,95 @@ const FRONTEND_BUILD = (
 
 app.use(express.json());
 
+/** Swagger/OpenAPI sono serviti dall'API FastAPI, non da Express: reindirizza al backend */
+app.get("/docs", (_req, res) => {
+  res.redirect(302, `${pythonApi}/docs`);
+});
+app.get("/redoc", (_req, res) => {
+  res.redirect(302, `${pythonApi}/redoc`);
+});
+app.get("/openapi.json", (_req, res) => {
+  res.redirect(302, `${pythonApi}/openapi.json`);
+});
+
+function _proxyDetailFromError(err) {
+  const msg = err && err.message ? String(err.message) : String(err);
+  if (
+    msg.includes("Unexpected token") ||
+    msg.includes("<!DOCTYPE") ||
+    msg.includes("is not valid JSON")
+  ) {
+    return (
+      "Il backend non ha restituito JSON (di solito una pagina HTML). " +
+      "Sul servizio WEB Render imposta PYTHON_API_URL con l'URL dell'API Python (FastAPI), " +
+      "es. https://TUO-NOME-api.onrender.com — non l'URL del solo sito vetrina. " +
+      "Verifica aprendo /api/health-check su questo sito dopo il deploy."
+    );
+  }
+  return `Errore proxy: ${msg}`;
+}
+
 async function proxyApi(req, res, method, endpoint) {
   try {
     const headers = { "Content-Type": "application/json" };
     if (req.headers.authorization) {
       headers.Authorization = req.headers.authorization;
     }
-    const response = await fetch(`${pythonApi}${endpoint}`, {
+    const url = `${pythonApi}${endpoint}`;
+    const response = await fetch(url, {
       method,
       headers,
       body: method === "GET" || method === "DELETE" ? undefined : JSON.stringify(req.body || {}),
     });
-    const data = await response.json();
-    res.status(response.status).json(data);
+    const raw = await response.text();
+    let data;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      const isHtml = raw.trimStart().startsWith("<");
+      const detail = isHtml
+        ? "Il backend ha restituito HTML invece di JSON. Su Render, sul servizio WEB, imposta PYTHON_API_URL con l'URL dell'API Python (es. https://nome-api.onrender.com), non l'URL della homepage del sito. Poi ridistribuisci il web."
+        : `Risposta non valida dal backend: ${raw.slice(0, 200)}`;
+      return res.status(502).json({ detail });
+    }
+    const st = Number(response.status);
+    const code = st >= 100 && st <= 599 ? st : 502;
+    res.status(code).json(data);
   } catch (error) {
-    res.status(500).json({ detail: `Errore proxy: ${error.message}` });
+    res.status(500).json({ detail: _proxyDetailFromError(error) });
   }
 }
+
+/** Verifica che PYTHON_API_URL punti all'API Python (GET /health deve rispondere JSON) */
+app.get("/api/health-check", async (_req, res) => {
+  try {
+    const r = await fetch(`${pythonApi}/health`);
+    const raw = await r.text();
+    let backend;
+    try {
+      backend = raw ? JSON.parse(raw) : null;
+    } catch {
+      return res.status(200).json({
+        ok: false,
+        pythonApiBase: pythonApi,
+        error: "Risposta non JSON (spesso HTML): PYTHON_API_URL errato o API spenta",
+        preview: raw.slice(0, 200),
+      });
+    }
+    return res.status(200).json({
+      ok: r.ok,
+      pythonApiBase: pythonApi,
+      backend,
+    });
+  } catch (e) {
+    return res.status(200).json({
+      ok: false,
+      pythonApiBase: pythonApi,
+      error: String(e.message),
+      hint: "Controlla PYTHON_API_URL e che l'API sia online",
+    });
+  }
+});
 
 app.post("/api/registration/request-otp", (req, res) =>
   proxyApi(req, res, "POST", "/auth/registration/request-otp")
