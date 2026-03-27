@@ -1110,6 +1110,26 @@ app.get("/", (_req, res) => {
       gap:10px;
     }
     .contact .full{grid-column:1 / -1}
+    .hook{
+      margin-top:14px;
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:16px;
+      background:linear-gradient(135deg,#0f172acc,#312e81cc,#6d28d9b8);
+      box-shadow:0 12px 28px rgba(0,0,0,.24);
+    }
+    .hook strong{
+      display:block;
+      margin-bottom:8px;
+      font-size:22px;
+      line-height:1.25;
+    }
+    .hook p{
+      margin:0;
+      color:#dbeafe;
+      line-height:1.5;
+      font-size:15px;
+    }
     .footer{
       margin-top:16px;
       border:1px solid var(--border);
@@ -1250,6 +1270,11 @@ app.get("/", (_req, res) => {
         <button class="full">Invia richiesta</button>
       </div>
       <p class="small">Form dimostrativo design: il backend contatti verra collegato nel prossimo step.</p>
+    </section>
+
+    <section class="hook">
+      <strong>Trasforma oggi il tuo business in una macchina di crescita.</strong>
+      <p>Club Business IA unisce strategia, vendite e automazione in un solo ecosistema: acquisisci clienti migliori, aumenta conversioni e fidelizza nel tempo con un'esperienza professionale che fa la differenza.</p>
     </section>
 
     <div id="out" class="output">Benvenuto in Club Business IA.</div>

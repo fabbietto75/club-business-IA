@@ -132,6 +132,9 @@ class User(Base):
     avatar_url = Column(String(500), nullable=True)
     profile_mode = Column(String(20), nullable=False, default="privato")
     company_photo_url = Column(String(500), nullable=True)
+    failed_login_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    last_login_at = Column(DateTime, nullable=True)
     coins = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -533,6 +536,11 @@ class RefreshIn(BaseModel):
     refresh_token: str
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class AdminUserRoleUpdate(BaseModel):
     role: str
 
@@ -727,6 +735,9 @@ def ensure_schema_updates() -> None:
         "avatar_url": "VARCHAR(500) NULL",
         "profile_mode": "VARCHAR(20) NOT NULL DEFAULT 'privato'",
         "company_photo_url": "VARCHAR(500) NULL",
+        "failed_login_attempts": "INTEGER NOT NULL DEFAULT 0",
+        "locked_until": dt_null,
+        "last_login_at": dt_null,
     }
 
     with engine.begin() as conn:
@@ -889,6 +900,14 @@ def validate_target_segment(target_segment: str) -> str:
             detail="Target non autorizzato. Accesso consentito solo ai segmenti del club.",
         )
     return cleaned
+
+
+def revoke_all_user_tokens(db: Session, user_id: int) -> None:
+    db.query(AuthToken).filter(
+        AuthToken.user_id == user_id,
+        AuthToken.revoked.is_(False),
+    ).update({AuthToken.revoked: True}, synchronize_session=False)
+    db.commit()
 
 
 def revoke_token_jti(db: Session, jti: Optional[str]) -> None:
@@ -1144,7 +1163,19 @@ def request_registration_otp(payload: RequestRegistrationOtpIn, db: Session = De
 @app.post("/auth/login", response_model=TokenOut)
 def login(payload: LoginIn, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == str(payload.email).lower()).first()
+    now = datetime.utcnow()
+    if user and user.locked_until and user.locked_until > now:
+        raise HTTPException(
+            status_code=423,
+            detail="Account temporaneamente bloccato per troppi tentativi. Riprova piu tardi.",
+        )
     if not user or not verify_password(payload.password, user.password_hash):
+        if user:
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= 5:
+                user.failed_login_attempts = 0
+                user.locked_until = now + timedelta(minutes=15)
+            db.commit()
         raise HTTPException(status_code=401, detail="Credenziali non valide")
     if not user.is_approved:
         raise HTTPException(status_code=403, detail="Account in attesa di approvazione admin")
@@ -1166,6 +1197,10 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
             user.email_otp_code = None
             user.email_otp_expires_at = None
             db.commit()
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    user.last_login_at = now
+    db.commit()
     return issue_auth_tokens(db, user)
 
 
@@ -1212,6 +1247,25 @@ def logout(
     return {"status": "ok"}
 
 
+@app.post("/auth/change-password")
+def change_password(
+    payload: ChangePasswordIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=401, detail="Password corrente non valida")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=400, detail="La nuova password deve essere diversa")
+    ok, reason = password_security_check(payload.new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+    current_user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    revoke_all_user_tokens(db, current_user.id)
+    return {"status": "ok", "message": "Password aggiornata. Effettua di nuovo il login."}
+
+
 @app.get("/auth/me", response_model=UserOut)
 def auth_me(current_user: User = Depends(get_current_user)):
     return current_user
@@ -1223,7 +1277,7 @@ def update_account_profile(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    allowed = {x.strip().lower() for x in ALLOWED_TARGETS.split(",") if x.strip()}
+    allowed = {x.strip().lower() for x in ALLOWED_TARGETS if x.strip()}
     target_segment = payload.target_segment.strip().lower()
     if target_segment not in allowed:
         raise HTTPException(status_code=400, detail="Target non consentito")
