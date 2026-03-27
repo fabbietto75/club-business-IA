@@ -408,10 +408,24 @@ app.get("/backend", (_req, res) => {
         headers: authHeaders(),
         body: payload ? JSON.stringify(payload) : undefined
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data = {};
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error("Risposta non valida dal server (non JSON).");
+        }
+      }
       if (!res.ok) {
-        const detail = typeof data?.detail === "string" ? data.detail : JSON.stringify(data?.detail || data);
-        throw new Error(detail || "Errore API");
+        const d = data?.detail;
+        const detail =
+          typeof d === "string"
+            ? d
+            : Array.isArray(d)
+              ? d.map((x) => x?.msg || x?.detail || JSON.stringify(x)).join("; ")
+              : JSON.stringify(data?.detail || data);
+        throw new Error(detail || text.slice(0, 240) || "Errore API");
       }
       return data;
     }
@@ -1291,16 +1305,60 @@ app.get("/", (_req, res) => {
       const out = document.getElementById("out");
       out.textContent = typeof x === "string" ? x : JSON.stringify(x, null, 2);
     };
+    function formatApiDetail(detail) {
+      if (detail == null) return "";
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail)) {
+        return detail
+          .map((item) => {
+            if (!item) return "";
+            if (typeof item === "string") return item;
+            if (item.msg) return String(item.msg);
+            if (item.detail) return String(item.detail);
+            return JSON.stringify(item);
+          })
+          .filter(Boolean)
+          .join("; ");
+      }
+      if (typeof detail === "object") {
+        return detail.detail != null ? String(detail.detail) : JSON.stringify(detail);
+      }
+      return String(detail);
+    }
     async function api(path, payload) {
       const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload || {}),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Errore API");
+      const text = await res.text();
+      let data = {};
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error(
+            "Risposta non valida dal server (non JSON). Controlla connessione e riprova."
+          );
+        }
+      }
+      if (!res.ok) {
+        const msg =
+          formatApiDetail(data.detail) ||
+          (data.message ? String(data.message) : "") ||
+          text.slice(0, 240) ||
+          "Errore HTTP " + res.status;
+        throw new Error(msg);
+      }
       return data;
     }
+    (function initLoginEmail() {
+      try {
+        const last = localStorage.getItem("club_last_email");
+        const el = document.getElementById("logEmail");
+        if (last && el && !el.value) el.value = last;
+      } catch (_) {}
+    })();
     function showLoginCard() {
       const loginCard = document.getElementById("loginCard");
       loginCard.classList.remove("hidden");
@@ -1317,6 +1375,12 @@ app.get("/", (_req, res) => {
           registration_otp_code: regOtpCode.value || null
         });
         setOut(data);
+        const email = (regEmail.value || "").trim().toLowerCase();
+        if (email) {
+          localStorage.setItem("club_last_email", email);
+          const le = document.getElementById("logEmail");
+          if (le) le.value = email;
+        }
         showLoginCard();
       } catch (e) { setOut(e.message); }
     }
