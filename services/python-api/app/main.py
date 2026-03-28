@@ -7,6 +7,7 @@ import string
 import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from email.utils import parseaddr
 from decimal import Decimal
 from typing import Optional
 
@@ -908,8 +909,89 @@ def _smtp_configured() -> bool:
     )
 
 
+def _brevo_api_key() -> str:
+    """Chiave API transazionale Brevo (HTTPS :443). Su Render Free le porte SMTP sono bloccate."""
+    return (os.getenv("BREVO_API_KEY") or os.getenv("SENDINBLUE_API_KEY") or "").strip()
+
+
 def _smtp_from_addr() -> str:
     return (os.getenv("SMTP_FROM") or os.getenv("SMTP_USER") or "").strip()
+
+
+def _transactional_email_configured() -> bool:
+    """Brevo API + mittente, oppure SMTP completo."""
+    if _brevo_api_key() and _smtp_from_addr():
+        return True
+    return _smtp_configured()
+
+
+def _sender_email_and_display_name() -> tuple[str, str]:
+    """(email_mittente, nome_visualizzato) da SMTP_FROM / SMTP_USER."""
+    raw = _smtp_from_addr()
+    if not raw:
+        raise RuntimeError("SMTP_FROM o SMTP_USER richiesto come mittente (anche solo con Brevo API)")
+    name, addr = parseaddr(raw)
+    email = (addr or raw).strip()
+    if not email:
+        raise RuntimeError("Mittente email non valido in SMTP_FROM / SMTP_USER")
+    env_name = (os.getenv("BREVO_SENDER_NAME") or "").strip()
+    display = env_name or (name.strip() if name else "") or "Club Business IA"
+    return email, display
+
+
+def _brevo_send_transactional(to_email: str, subject: str, text_content: str) -> None:
+    key = _brevo_api_key()
+    if not key:
+        raise RuntimeError("BREVO_API_KEY non impostata")
+    sender_email, sender_name = _sender_email_and_display_name()
+    url = (os.getenv("BREVO_API_URL") or "https://api.brevo.com/v3/smtp/email").strip()
+    payload = {
+        "sender": {"email": sender_email, "name": sender_name},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "textContent": text_content,
+        "replyTo": {"email": sender_email, "name": sender_name},
+    }
+    try:
+        to = int(os.getenv("BREVO_API_TIMEOUT_SECONDS", "45"))
+    except ValueError:
+        to = 45
+    to = max(5, min(120, to))
+    r = requests.post(
+        url,
+        json=payload,
+        headers={
+            "api-key": key,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        timeout=to,
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(f"Brevo API HTTP {r.status_code}: {r.text[:600]}")
+
+
+def _deliver_transactional_email(to_addr: str, subject: str, body: str) -> None:
+    """Preferisce Brevo API (porta 443) se BREVO_API_KEY e' impostata; altrimenti SMTP."""
+    if _brevo_api_key():
+        _brevo_send_transactional(to_addr, subject, body)
+        return
+    if _smtp_configured():
+        from_addr = _smtp_from_addr()
+        if not from_addr:
+            raise RuntimeError("SMTP_FROM o SMTP_USER richiesto per l'invio email")
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = from_addr
+        msg["To"] = to_addr
+        msg["Reply-To"] = from_addr
+        msg.set_content(body)
+        _smtp_send_message(msg)
+        return
+    raise RuntimeError(
+        "Nessun canale email: imposta BREVO_API_KEY + SMTP_FROM (consigliato su Render Free) "
+        "oppure SMTP_HOST + SMTP_USER + SMTP_PASSWORD"
+    )
 
 
 def _smtp_tls_context() -> ssl.SSLContext:
@@ -957,9 +1039,6 @@ def _smtp_send_message(msg: EmailMessage) -> None:
 
 
 def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
-    from_addr = _smtp_from_addr()
-    if not from_addr:
-        raise RuntimeError("SMTP_FROM o SMTP_USER richiesto per l'invio email")
     subject = "Club Business IA - nuova password"
     body = (
         "Ciao,\n\n"
@@ -968,19 +1047,10 @@ def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
         "Accedi e cambiala al piu presto.\n\n"
         "Se non hai richiesto tu questa operazione, contatta il supporto.\n"
     )
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-    msg["Reply-To"] = from_addr
-    msg.set_content(body)
-    _smtp_send_message(msg)
+    _deliver_transactional_email(to_addr, subject, body)
 
 
 def send_registration_verification_email(to_addr: str, user_name: str, otp_code: str) -> None:
-    from_addr = _smtp_from_addr()
-    if not from_addr:
-        raise RuntimeError("SMTP_FROM o SMTP_USER richiesto per l'invio email")
     subject = "Club Business IA - verifica la tua email"
     body = (
         f"Ciao {user_name},\n\n"
@@ -989,13 +1059,7 @@ def send_registration_verification_email(to_addr: str, user_name: str, otp_code:
         "(valido 10 minuti). Inseriscilo nel sito nella sezione Verifica email.\n\n"
         "Se non hai creato tu l'account, ignora questo messaggio.\n"
     )
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-    msg["Reply-To"] = from_addr
-    msg.set_content(body)
-    _smtp_send_message(msg)
+    _deliver_transactional_email(to_addr, subject, body)
 
 
 def _issue_post_registration_otp(db: Session, user: User, segment: str) -> tuple[Optional[str], str]:
@@ -1018,10 +1082,10 @@ def _issue_post_registration_otp(db: Session, user: User, segment: str) -> tuple
     db.commit()
     dev_for_response = otp_code if EMAIL_OTP_DEV_EXPOSE else None
 
-    if not _smtp_configured():
+    if not _transactional_email_configured():
         logger.warning(
-            "SMTP non configurato: nessuna email inviata per verifica %s. "
-            "Serve SMTP_HOST + SMTP_USER + SMTP_PASSWORD (e SMTP_FROM consigliato).",
+            "Email transazionale non configurata: nessun invio per verifica %s. "
+            "Su Render Free usa BREVO_API_KEY + SMTP_FROM, oppure SMTP completo su piano a pagamento.",
             email,
         )
         return dev_for_response, "no_smtp"
@@ -1238,6 +1302,8 @@ def health():
             "send_post_registration_otp": SEND_POST_REGISTRATION_OTP,
             "require_email_verification_to_login": REQUIRE_EMAIL_VERIFICATION,
             "smtp_configured": _smtp_configured(),
+            "brevo_api_configured": bool(_brevo_api_key()),
+            "transactional_email_configured": _transactional_email_configured(),
             "smtp_from_configured": bool(_smtp_from_addr()),
         },
     }
@@ -1317,6 +1383,34 @@ def health_smtp_send_test(
         }
     except Exception as exc:
         logger.exception("SMTP send test fallito")
+        return {"ok": False, "detail": str(exc)[:800]}
+
+
+@app.post("/health/brevo-send-test")
+def health_brevo_send_test(
+    payload: SmtpTestSendIn,
+    x_smtp_diagnostic: Optional[str] = Header(default=None, alias="X-SMTP-Diagnostic"),
+):
+    """Invia email di test via API Brevo (HTTPS). Stesso token di /health/smtp-send-test."""
+    token = (x_smtp_diagnostic or "").strip()
+    if not SMTP_DIAGNOSTIC_TOKEN or token != SMTP_DIAGNOSTIC_TOKEN:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not _brevo_api_key():
+        raise HTTPException(status_code=400, detail="BREVO_API_KEY non impostata")
+    if not _smtp_from_addr():
+        raise HTTPException(status_code=400, detail="SMTP_FROM (mittente verificato Brevo) richiesto")
+    try:
+        _brevo_send_transactional(
+            str(payload.to),
+            "Test Club Business IA (API Brevo)",
+            f"Se leggi questa email, l'invio via API Brevo (HTTPS) da Render funziona.\nDestinatario: {payload.to}\n",
+        )
+        return {
+            "ok": True,
+            "detail": f"Brevo API ha accettato l'invio verso {payload.to}. Controlla inbox e spam.",
+        }
+    except Exception as exc:
+        logger.exception("Brevo send test fallito")
         return {"ok": False, "detail": str(exc)[:800]}
 
 
@@ -1416,14 +1510,13 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         db.refresh(user)
         if otp_outcome == "no_smtp":
             msg = (
-                "Registrazione completata. L'invio email non e configurato sul server: "
-                "imposta SMTP_HOST, SMTP_USER, SMTP_PASSWORD e SMTP_FROM (es. su Render). "
-                "Controlla GET /health → registration.smtp_configured."
+                "Registrazione completata. Email non configurata: su Render Free usa BREVO_API_KEY + SMTP_FROM; "
+                "altrove SMTP completo. Controlla GET /health → transactional_email_configured."
             )
         elif otp_outcome == "smtp_failed":
             msg = (
                 "Registrazione completata ma l'email con il codice non e partita. "
-                "Verifica credenziali SMTP nei log del server e riprova."
+                "Verifica BREVO_API_KEY e mittente in Brevo, o SMTP nei log del server, e riprova."
             )
         else:
             msg = (
@@ -1515,11 +1608,13 @@ def resend_registration_verification(
     dev_code, otp_outcome = _issue_post_registration_otp(db, user, segment)
     if otp_outcome == "no_smtp":
         msg = (
-            "Impossibile inviare email: SMTP non configurato sul server API. "
-            "Contatta il supporto o verifica GET /health (smtp_configured)."
+            "Impossibile inviare email: sul server API manca BREVO_API_KEY+SMTP_FROM o SMTP completo. "
+            "Su Render Free serve l'API Brevo (HTTPS), non SMTP. Verifica GET /health (transactional_email_configured)."
         )
     elif otp_outcome == "smtp_failed":
-        msg = "Invio email non riuscito. Verifica credenziali SMTP nei log dell'API."
+        msg = (
+            "Invio email non riuscito. Verifica BREVO_API_KEY e mittente in Brevo, o credenziali SMTP nei log."
+        )
     else:
         msg = "Ti abbiamo inviato un nuovo codice via email (controlla anche spam)."
     return {
@@ -1654,13 +1749,13 @@ def forgot_password(payload: ForgotPasswordIn, db: Session = Depends(get_db)):
 
     new_pwd = generate_secure_temporary_password()
 
-    if _smtp_configured():
+    if _transactional_email_configured():
         try:
             send_password_reset_email(user.email, new_pwd)
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail="Invio email non riuscito. Verifica SMTP o riprova piu tardi.",
+                detail="Invio email non riuscito. Verifica BREVO_API_KEY/SMTP o riprova piu tardi.",
             ) from exc
         user.password_hash = hash_password(new_pwd)
         user.failed_login_attempts = 0

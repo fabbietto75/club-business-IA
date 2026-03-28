@@ -57,6 +57,11 @@ services:
         sync: false
       - key: SMTP_FROM
         sync: false
+      # Render Free blocca SMTP 25/465/587: usa chiave API Brevo + SMTP_FROM (mittente verificato)
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_SENDER_NAME
+        sync: false
       - key: SMTP_USE_TLS
         value: "true"
       - key: SITE_CAPACITY

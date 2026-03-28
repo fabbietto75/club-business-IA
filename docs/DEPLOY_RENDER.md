@@ -45,6 +45,7 @@ Il blueprint crea un **PostgreSQL gestito** (`club-business-ia-db`): i dati rest
 ### Piano free
 
 - I servizi free possono andare in sleep dopo inattivita: il primo accesso puo richiedere ~1 minuto.
+- **Email transazionali:** da settembre 2025 Render **blocca il traffico in uscita verso le porte SMTP 25, 465 e 587** sui Web Service gratuiti. Se nei log vedi `TimeoutError` su `smtplib` verso Brevo, non e (solo) un problema di credenziali: configura **`BREVO_API_KEY`** sul servizio API (invio via **HTTPS**, porta 443) e **`SMTP_FROM`** con un mittente verificato in Brevo. Vedi `services/python-api/.env.example`.
 
 ### Il servizio non risulta Live o il sito “non va”
 
