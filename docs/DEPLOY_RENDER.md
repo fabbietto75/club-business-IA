@@ -80,6 +80,19 @@ Nei log di build la riga `Checking out commit ...` deve coincidere con l’ultim
 3. Usa **Clear build cache & deploy** così non resta una cache legata al vecchio tree.
 4. Se non cambia: **Disconnect** il repository e **ricollegalo**, poi di nuovo deploy da `main`.
 
+## Build fallita: «uscita con stato 1» (email Render su club-business-IA-2 / API)
+
+Significa che **il comando di build** (di solito `docker build`) non è terminato con successo: **l’ultimo codice non è in produzione** finché la build non va a buon fine.
+
+1. Apri il servizio API su Render → **Logs** (o dal pulsante nell’email) e scorri **Build logs** (non solo Runtime): l’ultima riga utile di solito è l’errore `pip`, `COPY` o `Dockerfile not found`.
+2. **Root Directory e Dockerfile** devono essere coerenti:
+   - Se **Root Directory** = vuoto (root repo): **Dockerfile Path** = `services/python-api/Dockerfile` e **Docker Build Context** = `services/python-api` (come in `render.yaml`).
+   - Se **Root Directory** = `services/python-api`: **Dockerfile Path** = `Dockerfile` (non ripetere `services/python-api/` nel path).
+3. Il servizio API deve essere **Environment: Docker**, non una build “Native” con comando `pip` nella cartella sbagliata.
+4. Da **Manual Deploy** prova **Clear build cache & deploy** (a volte la cache corrompe la build).
+
+Il `Dockerfile` dell’API include dipendenze di sistema minime (`gcc`, `libpq-dev`) per ridurre i casi in cui `pip` deve compilare pacchetti senza wheel adatto.
+
 ## Errore: `Port scan timeout reached, no open ports detected`
 
 L’app deve ascoltare sulla porta indicata dalla variabile d’ambiente **`PORT`** che Render imposta nel container. Il Dockerfile dell’API usa `${PORT:-8000}`. Se nei log di runtime vedi ancora `Uvicorn running on ... 8000` **senza** prima una riga `uvicorn binding port=...` con un numero diverso, stai eseguendo un’immagine costruita da un commit **prima** del fix della porta: aggiorna il deploy come sopra.
