@@ -64,6 +64,16 @@ Il blueprint crea un **PostgreSQL gestito** (`club-business-ia-db`): i dati rest
 3. **Web Service (frontend)**: Docker, context `services/js-frontend`.  
    `PYTHON_API_URL` = URL pubblico dell’API.
 
+## Errore: «Il backend ha restituito HTML invece di JSON»
+
+Succede quando il **servizio WEB** (frontend Node) chiama un URL che risponde con una **pagina HTML** (di solito la **homepage dello stesso sito**), non con JSON dall’API FastAPI.
+
+1. Su Render apri il **Web Service del sito** (frontend), non quello dell’API.
+2. **Environment** → aggiungi o correggi **`PYTHON_API_URL`** con l’URL pubblico dell’**API Python**, ad esempio `https://club-business-ia-2.onrender.com` (il nome esatto lo vedi nella dashboard del servizio API). **Senza** slash finale.
+3. **Non** impostare `PYTHON_API_URL` uguale all’URL del frontend (es. `https://club-business-ia-1.onrender.com` se quello è solo il sito vetrina).
+4. **Manual Deploy** sul servizio **WEB** dopo aver salvato le variabili.
+5. Verifica dal browser: `https://<URL-FRONTEND>/api/health-check` — deve mostrare JSON con `ok: true` e `pythonApiBase` uguale all’URL dell’API. Se vedi `ok: false` e un `preview` che inizia con `<!DOCTYPE`, la variabile è ancora sbagliata o l’API è spenta.
+
 ## CORS
 
 L’API usa `ALLOWED_ORIGINS` (lista separata da virgole). Deve includere esattamente l’origine del frontend (schema + host + porta se presente).

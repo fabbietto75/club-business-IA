@@ -85,6 +85,8 @@ services:
     dockerfilePath: ./services/js-frontend/Dockerfile
     dockerContext: ./services/js-frontend
     envVars:
+      # Obbligatorio: URL del servizio FastAPI (es. https://club-business-ia-2.onrender.com), SENZA slash finale.
+      # NON usare l'URL del frontend (stesso sito): il proxy riceverebbe HTML e l'errore "HTML invece di JSON".
       - key: PYTHON_API_URL
         sync: false
       # PORT è impostato automaticamente da Render; server.js usa process.env.PORT
