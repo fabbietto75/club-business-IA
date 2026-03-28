@@ -908,6 +908,10 @@ def _smtp_configured() -> bool:
     )
 
 
+def _smtp_from_addr() -> str:
+    return (os.getenv("SMTP_FROM") or os.getenv("SMTP_USER") or "").strip()
+
+
 def _smtp_tls_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
@@ -953,7 +957,7 @@ def _smtp_send_message(msg: EmailMessage) -> None:
 
 
 def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
-    from_addr = (os.getenv("SMTP_FROM") or os.getenv("SMTP_USER") or "").strip()
+    from_addr = _smtp_from_addr()
     if not from_addr:
         raise RuntimeError("SMTP_FROM o SMTP_USER richiesto per l'invio email")
     subject = "Club Business IA - nuova password"
@@ -974,7 +978,7 @@ def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
 
 
 def send_registration_verification_email(to_addr: str, user_name: str, otp_code: str) -> None:
-    from_addr = (os.getenv("SMTP_FROM") or os.getenv("SMTP_USER") or "").strip()
+    from_addr = _smtp_from_addr()
     if not from_addr:
         raise RuntimeError("SMTP_FROM o SMTP_USER richiesto per l'invio email")
     subject = "Club Business IA - verifica la tua email"
@@ -1234,6 +1238,7 @@ def health():
             "send_post_registration_otp": SEND_POST_REGISTRATION_OTP,
             "require_email_verification_to_login": REQUIRE_EMAIL_VERIFICATION,
             "smtp_configured": _smtp_configured(),
+            "smtp_from_configured": bool(_smtp_from_addr()),
         },
     }
 
@@ -1273,6 +1278,45 @@ def health_smtp_check(token: Optional[str] = None):
         }
     except Exception as exc:
         logger.exception("SMTP check fallito")
+        return {"ok": False, "detail": str(exc)[:800]}
+
+
+class SmtpTestSendIn(BaseModel):
+    to: EmailStr
+
+
+@app.post("/health/smtp-send-test")
+def health_smtp_send_test(
+    payload: SmtpTestSendIn,
+    x_smtp_diagnostic: Optional[str] = Header(default=None, alias="X-SMTP-Diagnostic"),
+):
+    """Invia una email di test reale (debug). Header X-SMTP-Diagnostic = SMTP_DIAGNOSTIC_TOKEN."""
+    token = (x_smtp_diagnostic or "").strip()
+    if not SMTP_DIAGNOSTIC_TOKEN or token != SMTP_DIAGNOSTIC_TOKEN:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not _smtp_configured():
+        raise HTTPException(status_code=400, detail="SMTP_HOST/USER/PASSWORD mancanti")
+    from_addr = _smtp_from_addr()
+    if not from_addr:
+        raise HTTPException(status_code=400, detail="SMTP_FROM o SMTP_USER mancante")
+    msg = EmailMessage()
+    msg["Subject"] = "Test Club Business IA (diagnostica SMTP)"
+    msg["From"] = from_addr
+    msg["To"] = str(payload.to)
+    msg["Reply-To"] = from_addr
+    msg.set_content(
+        "Se leggi questa email, l'invio SMTP da Render (API Python) verso Brevo e la consegna "
+        f"verso {payload.to} funzionano.\n\n"
+        "Puoi ignorare questo messaggio.\n"
+    )
+    try:
+        _smtp_send_message(msg)
+        return {
+            "ok": True,
+            "detail": f"SMTP ha accettato l'invio verso {payload.to}. Controlla inbox e spam (anche su Libero puo tardare).",
+        }
+    except Exception as exc:
+        logger.exception("SMTP send test fallito")
         return {"ok": False, "detail": str(exc)[:800]}
 
 
