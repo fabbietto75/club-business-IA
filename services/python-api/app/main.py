@@ -2,6 +2,7 @@ import logging
 import os
 import secrets
 import smtplib
+import ssl
 import string
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -40,6 +41,9 @@ from .security_plugin import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Token opzionale: GET /health/smtp-check?token=... per testare login SMTP su Render (senza inviare email)
+SMTP_DIAGNOSTIC_TOKEN = os.getenv("SMTP_DIAGNOSTIC_TOKEN", "").strip()
 
 
 def _normalize_database_url(url: str) -> str:
@@ -634,6 +638,10 @@ class VerifyRegistrationEmailIn(BaseModel):
     code: str
 
 
+class ResendRegistrationVerificationIn(BaseModel):
+    email: EmailStr
+
+
 class UserSignupResponse(BaseModel):
     user: UserOut
     message: str
@@ -900,6 +908,15 @@ def _smtp_configured() -> bool:
     )
 
 
+def _smtp_tls_context() -> ssl.SSLContext:
+    return ssl.create_default_context()
+
+
+def _smtp_local_hostname() -> Optional[str]:
+    h = (os.getenv("SMTP_EHLO_HOSTNAME") or "").strip()
+    return h or None
+
+
 def _smtp_send_message(msg: EmailMessage) -> None:
     """Invio via SMTP (Brevo, Gmail app password, ecc.). Credenziali solo da variabili d'ambiente."""
     host = os.getenv("SMTP_HOST", "").strip()
@@ -909,22 +926,27 @@ def _smtp_send_message(msg: EmailMessage) -> None:
     use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
     use_ssl = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
     debug = os.getenv("SMTP_DEBUG", "false").lower() == "true"
+    timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "60"))
+    local_hostname = _smtp_local_hostname()
 
     if use_ssl:
-        # Es. Brevo porta 465: SSL diretto (senza STARTTLS)
-        with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
+        ctx = _smtp_tls_context()
+        with smtplib.SMTP_SSL(
+            host, port, timeout=timeout, context=ctx, local_hostname=local_hostname
+        ) as smtp:
             if debug:
                 smtp.set_debuglevel(1)
             smtp.login(user, password)
             smtp.send_message(msg)
         return
 
-    with smtplib.SMTP(host, port, timeout=30) as smtp:
+    ctx = _smtp_tls_context()
+    with smtplib.SMTP(host, port, timeout=timeout, local_hostname=local_hostname) as smtp:
         if debug:
             smtp.set_debuglevel(1)
         smtp.ehlo()
         if use_tls:
-            smtp.starttls()
+            smtp.starttls(context=ctx)
             smtp.ehlo()
         smtp.login(user, password)
         smtp.send_message(msg)
@@ -946,6 +968,7 @@ def send_password_reset_email(to_addr: str, new_password_plain: str) -> None:
     msg["Subject"] = subject
     msg["From"] = from_addr
     msg["To"] = to_addr
+    msg["Reply-To"] = from_addr
     msg.set_content(body)
     _smtp_send_message(msg)
 
@@ -966,6 +989,7 @@ def send_registration_verification_email(to_addr: str, user_name: str, otp_code:
     msg["Subject"] = subject
     msg["From"] = from_addr
     msg["To"] = to_addr
+    msg["Reply-To"] = from_addr
     msg.set_content(body)
     _smtp_send_message(msg)
 
@@ -1214,6 +1238,44 @@ def health():
     }
 
 
+@app.get("/health/smtp-check")
+def health_smtp_check(token: Optional[str] = None):
+    """Test solo connessione+login SMTP (nessun invio). Richiede SMTP_DIAGNOSTIC_TOKEN in env e ?token= uguale."""
+    if not SMTP_DIAGNOSTIC_TOKEN or token != SMTP_DIAGNOSTIC_TOKEN:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not _smtp_configured():
+        return {"ok": False, "step": "env", "detail": "SMTP_HOST/USER/PASSWORD mancanti"}
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    use_tls = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+    use_ssl = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
+    timeout = int(os.getenv("SMTP_TIMEOUT_SECONDS", "60"))
+    local_hostname = _smtp_local_hostname()
+    ctx = _smtp_tls_context()
+    try:
+        if use_ssl:
+            with smtplib.SMTP_SSL(
+                host, port, timeout=timeout, context=ctx, local_hostname=local_hostname
+            ) as smtp:
+                smtp.login(user, password)
+        else:
+            with smtplib.SMTP(host, port, timeout=timeout, local_hostname=local_hostname) as smtp:
+                smtp.ehlo()
+                if use_tls:
+                    smtp.starttls(context=ctx)
+                    smtp.ehlo()
+                smtp.login(user, password)
+        return {
+            "ok": True,
+            "detail": "Connessione e login SMTP riusciti (nessuna email inviata).",
+        }
+    except Exception as exc:
+        logger.exception("SMTP check fallito")
+        return {"ok": False, "detail": str(exc)[:800]}
+
+
 @app.get("/health/ready")
 def health_ready():
     """Readiness: verifica connessione al database."""
@@ -1392,6 +1454,35 @@ def verify_registration_email(payload: VerifyRegistrationEmailIn, db: Session = 
     user.email_verified = True
     db.commit()
     return {"status": "ok", "message": "Email verificata. Puoi ora accedere."}
+
+
+@app.post("/auth/resend-registration-verification")
+def resend_registration_verification(
+    payload: ResendRegistrationVerificationIn, db: Session = Depends(get_db)
+):
+    """Reinvia il codice post-registrazione se l'email non e ancora verificata."""
+    email = str(payload.email).lower()
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    if user.email_verified:
+        return {"status": "ok", "message": "Email gia verificata."}
+    segment = validate_target_segment(user.target_segment)
+    dev_code, otp_outcome = _issue_post_registration_otp(db, user, segment)
+    if otp_outcome == "no_smtp":
+        msg = (
+            "Impossibile inviare email: SMTP non configurato sul server API. "
+            "Contatta il supporto o verifica GET /health (smtp_configured)."
+        )
+    elif otp_outcome == "smtp_failed":
+        msg = "Invio email non riuscito. Verifica credenziali SMTP nei log dell'API."
+    else:
+        msg = "Ti abbiamo inviato un nuovo codice via email (controlla anche spam)."
+    return {
+        "status": "ok",
+        "message": msg,
+        "dev_registration_code": dev_code if EMAIL_OTP_DEV_EXPOSE else None,
+    }
 
 
 @app.post("/auth/login", response_model=TokenOut)

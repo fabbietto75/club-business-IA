@@ -117,6 +117,9 @@ app.get("/api/register", (_req, res) => {
 app.post("/api/verify-registration-email", (req, res) =>
   proxyApi(req, res, "POST", "/auth/verify-registration-email")
 );
+app.post("/api/resend-registration-verification", (req, res) =>
+  proxyApi(req, res, "POST", "/auth/resend-registration-verification")
+);
 app.post("/api/request-email-otp", (req, res) =>
   proxyApi(req, res, "POST", "/auth/request-email-otp")
 );
@@ -1417,7 +1420,15 @@ app.get("/", (_req, res) => {
         <input id="verifyEmail" placeholder="Email usata in registrazione" />
         <input id="verifyCode" placeholder="Codice a 6 cifre dall'email" />
         <button onclick="verifyRegistrationEmail()">Conferma codice</button>
-        <p class="small">Inserisci il codice ricevuto dopo la registrazione per sbloccare il login.</p>
+        <button
+          type="button"
+          class="secondary"
+          style="margin-top:8px;background:transparent;border:1px solid #64748b;color:#e2e8f0;font-weight:700"
+          onclick="resendRegistrationVerification()"
+        >
+          Non arriva l'email? Reinvia codice
+        </button>
+        <p class="small">Inserisci il codice ricevuto dopo la registrazione per sbloccare il login. Controlla anche spam. Se il login dice di verificare l'email, apri questa sezione con il pulsante sotto al login.</p>
       </div>
 
       <div id="loginCard" class="card hidden">
@@ -1434,6 +1445,14 @@ app.get("/", (_req, res) => {
           onclick="forgotPassword()"
         >
           Password dimenticata
+        </button>
+        <button
+          type="button"
+          class="secondary"
+          style="margin-top:8px;background:transparent;border:1px solid #64748b;color:#e2e8f0;font-weight:700"
+          onclick="openVerifyFromLogin()"
+        >
+          Devo verificare l'email (codice)
         </button>
         <p class="small">Dopo il login il backend gestisce tutte le funzioni avanzate.</p>
       </div>
@@ -1538,6 +1557,32 @@ app.get("/", (_req, res) => {
       const verifyCard = document.getElementById("verifyCard");
       verifyCard.classList.remove("hidden");
       verifyCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    function openVerifyFromLogin() {
+      const e = (document.getElementById("logEmail").value || "").trim();
+      if (e) {
+        const ve = document.getElementById("verifyEmail");
+        if (ve) ve.value = e;
+      }
+      showVerifyCard();
+    }
+
+    async function resendRegistrationVerification() {
+      try {
+        const email = (document.getElementById("verifyEmail").value || "").trim();
+        if (!email) {
+          setOut("Inserisci l'email nel campo sopra, poi clicca Reinvia codice.");
+          return;
+        }
+        const data = await api("/api/resend-registration-verification", { email });
+        const payload = {
+          message: data.message || "",
+          dev_registration_code: data.dev_registration_code || null
+        };
+        setOut(payload);
+      } catch (e) {
+        setOut(e.message);
+      }
     }
 
     async function registerUser() {
