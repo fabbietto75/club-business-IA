@@ -7,7 +7,7 @@ import string
 import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from email.utils import parseaddr
+from email.utils import formataddr, parseaddr
 from decimal import Decimal
 from typing import Optional
 
@@ -17,7 +17,7 @@ import requests
 import stripe
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import (
     DECIMAL,
     Boolean,
@@ -118,6 +118,9 @@ REQUIRE_EMAIL_VERIFICATION = os.getenv("REQUIRE_EMAIL_VERIFICATION", "true").low
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 SITE_CAPACITY = int(os.getenv("SITE_CAPACITY", "200"))
+CONTACT_FORM_TO_EMAIL = (
+    os.getenv("CONTACT_FORM_TO_EMAIL") or "clubusiness2026@gmail.com"
+).strip()
 ALLOWED_ORIGINS = [
     o.strip()
     for o in os.getenv(
@@ -653,6 +656,17 @@ class AIChatIn(BaseModel):
     message: str
 
 
+class ContactFormIn(BaseModel):
+    full_name: str = Field(..., min_length=2, max_length=200)
+    email: EmailStr
+    company_target: str = Field(..., min_length=1, max_length=300)
+    message: str = Field(..., min_length=5, max_length=5000)
+
+
+class ContactFormOut(BaseModel):
+    message: str
+
+
 class CapacityOut(BaseModel):
     total_seats: int
     occupied_seats: int
@@ -939,18 +953,31 @@ def _sender_email_and_display_name() -> tuple[str, str]:
     return email, display
 
 
-def _brevo_send_transactional(to_email: str, subject: str, text_content: str) -> None:
+def _brevo_send_transactional(
+    to_email: str,
+    subject: str,
+    text_content: str,
+    *,
+    reply_to_email: Optional[str] = None,
+    reply_to_name: Optional[str] = None,
+) -> None:
     key = _brevo_api_key()
     if not key:
         raise RuntimeError("BREVO_API_KEY non impostata")
     sender_email, sender_name = _sender_email_and_display_name()
     url = (os.getenv("BREVO_API_URL") or "https://api.brevo.com/v3/smtp/email").strip()
+    if reply_to_email and reply_to_email.strip():
+        r_email = reply_to_email.strip()
+        r_name = (reply_to_name or "").strip() or r_email
+        reply_hdr = {"email": r_email, "name": r_name}
+    else:
+        reply_hdr = {"email": sender_email, "name": sender_name}
     payload = {
         "sender": {"email": sender_email, "name": sender_name},
         "to": [{"email": to_email}],
         "subject": subject,
         "textContent": text_content,
-        "replyTo": {"email": sender_email, "name": sender_name},
+        "replyTo": reply_hdr,
     }
     try:
         to = int(os.getenv("BREVO_API_TIMEOUT_SECONDS", "45"))
@@ -971,10 +998,23 @@ def _brevo_send_transactional(to_email: str, subject: str, text_content: str) ->
         raise RuntimeError(f"Brevo API HTTP {r.status_code}: {r.text[:600]}")
 
 
-def _deliver_transactional_email(to_addr: str, subject: str, body: str) -> None:
+def _deliver_transactional_email(
+    to_addr: str,
+    subject: str,
+    body: str,
+    *,
+    reply_to_email: Optional[str] = None,
+    reply_to_name: Optional[str] = None,
+) -> None:
     """Preferisce Brevo API (porta 443) se BREVO_API_KEY e' impostata; altrimenti SMTP."""
     if _brevo_api_key():
-        _brevo_send_transactional(to_addr, subject, body)
+        _brevo_send_transactional(
+            to_addr,
+            subject,
+            body,
+            reply_to_email=reply_to_email,
+            reply_to_name=reply_to_name,
+        )
         return
     if _smtp_configured():
         from_addr = _smtp_from_addr()
@@ -984,7 +1024,12 @@ def _deliver_transactional_email(to_addr: str, subject: str, body: str) -> None:
         msg["Subject"] = subject
         msg["From"] = from_addr
         msg["To"] = to_addr
-        msg["Reply-To"] = from_addr
+        if reply_to_email and reply_to_email.strip():
+            re = reply_to_email.strip()
+            rn = (reply_to_name or "").strip()
+            msg["Reply-To"] = formataddr((rn, re)) if rn else re
+        else:
+            msg["Reply-To"] = from_addr
         msg.set_content(body)
         _smtp_send_message(msg)
         return
@@ -1423,6 +1468,49 @@ def health_ready():
     except Exception as exc:
         raise HTTPException(status_code=503, detail="database_unavailable") from exc
     return {"status": "ok", "service": "python-api", "database": "ok"}
+
+
+@app.post("/contact", response_model=ContactFormOut)
+def contact_form(payload: ContactFormIn):
+    """Form pubblico Contattaci: invia email al team (default clubusiness2026@gmail.com)."""
+    if not _transactional_email_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Invio email non configurato sul server (SMTP o Brevo). "
+                "Contatta il supporto o riprova piu tardi."
+            ),
+        )
+    to_addr = CONTACT_FORM_TO_EMAIL
+    if not to_addr or "@" not in to_addr:
+        raise HTTPException(
+            status_code=503,
+            detail="Destinatario modulo contatti non configurato.",
+        )
+    name = payload.full_name.strip()
+    subject = f"[Club Business IA] Contatto sito — {name[:60]}"
+    body = (
+        "Richiesta dal form Contattaci sul sito.\n\n"
+        f"Nome e cognome: {name}\n"
+        f"Email: {payload.email}\n"
+        f"Azienda / Categoria target: {payload.company_target.strip()}\n\n"
+        f"Messaggio:\n{payload.message.strip()}\n"
+    )
+    try:
+        _deliver_transactional_email(
+            to_addr,
+            subject,
+            body,
+            reply_to_email=str(payload.email),
+            reply_to_name=name[:120] or None,
+        )
+    except Exception:
+        logger.exception("Invio modulo contatti fallito")
+        raise HTTPException(
+            status_code=502,
+            detail="Impossibile inviare la richiesta. Riprova piu tardi.",
+        ) from None
+    return ContactFormOut(message="Richiesta inviata. Ti ricontatteremo al piu presto.")
 
 
 @app.post("/ai/chat")

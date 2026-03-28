@@ -36,6 +36,7 @@ services:
       OPENAI_API_KEY: ""
       OPENAI_MODEL: "gpt-4o-mini"
       SITE_CAPACITY: "200"
+      CONTACT_FORM_TO_EMAIL: clubusiness2026@gmail.com
     ports:
       - "8000:8000"
     depends_on:

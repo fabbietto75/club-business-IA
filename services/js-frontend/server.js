@@ -127,6 +127,7 @@ app.post("/api/login", (req, res) => proxyApi(req, res, "POST", "/auth/login"));
 app.post("/api/forgot-password", (req, res) =>
   proxyApi(req, res, "POST", "/auth/forgot-password")
 );
+app.post("/api/contact", (req, res) => proxyApi(req, res, "POST", "/contact"));
 app.get("/api/auth/me", (req, res) => proxyApi(req, res, "GET", "/auth/me"));
 app.patch("/api/account/profile", (req, res) => proxyApi(req, res, "PATCH", "/account/profile"));
 app.get("/api/wallet/me", (req, res) => proxyApi(req, res, "GET", "/wallet/me"));
@@ -1461,13 +1462,13 @@ app.get("/", (_req, res) => {
     <section class="contact">
       <h3>Contattaci</h3>
       <div class="contact-grid">
-        <input placeholder="Nome e cognome" />
-        <input placeholder="Email professionale" />
-        <input class="full" placeholder="Azienda / Categoria target" />
-        <input class="full" placeholder="Messaggio (es: voglio attivare il mio spazio business)" />
-        <button class="full">Invia richiesta</button>
+        <input id="contactName" placeholder="Nome e cognome" />
+        <input id="contactEmail" type="email" placeholder="Email professionale" />
+        <input id="contactCompany" class="full" placeholder="Azienda / Categoria target" />
+        <textarea id="contactMessage" class="full" rows="4" placeholder="Messaggio (es: voglio attivare il mio spazio business)"></textarea>
+        <button type="button" class="full" onclick="submitContact()">Invia richiesta</button>
       </div>
-      <p class="small">Form dimostrativo design: il backend contatti verra collegato nel prossimo step.</p>
+      <p class="small">La richiesta viene inviata al team: riceverai conferma a schermo se l'invio riesce.</p>
     </section>
 
     <section class="hook">
@@ -1565,6 +1566,30 @@ app.get("/", (_req, res) => {
         if (ve) ve.value = e;
       }
       showVerifyCard();
+    }
+
+    async function submitContact() {
+      try {
+        const full_name = (document.getElementById("contactName").value || "").trim();
+        const email = (document.getElementById("contactEmail").value || "").trim();
+        const company_target = (
+          document.getElementById("contactCompany").value || ""
+        ).trim();
+        const message = (document.getElementById("contactMessage").value || "").trim();
+        if (!full_name || !email || !company_target || !message) {
+          setOut("Compila tutti i campi del form Contattaci.");
+          return;
+        }
+        const data = await api("/api/contact", {
+          full_name,
+          email,
+          company_target,
+          message,
+        });
+        setOut(data.message || "Richiesta inviata.");
+      } catch (e) {
+        setOut(e.message);
+      }
     }
 
     async function resendRegistrationVerification() {
